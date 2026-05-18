@@ -1,0 +1,46 @@
+# Core Deep Learning
+torch==2.0.1
+torchvision==0.15.2
+torchaudio==2.0.2
+
+# Computer Vision & ML
+opencv-python>=4.8.0
+numpy>=1.24.0
+scikit-image>=0.21.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+Pillow>=10.0.0
+
+# Model & Training
+segmentation-models-pytorch>=0.3.3
+timm>=0.9.0
+albumentations>=1.3.0
+
+# Object Detection
+ultralytics>=8.0.0  # YOLOv8
+
+# Autonomous Driving Simulation
+carla>=0.9.14  # CARLA simulator (optional, install from source)
+
+# Data Processing
+pandas>=2.0.0
+scipy>=1.11.0
+
+# Utilities
+tqdm>=4.66.0
+pyyaml>=6.0
+tensorboard>=2.13.0
+
+# Development (optional)
+jupyter>=1.0.0
+ipython>=8.12.0
+pytest>=7.4.0
+black>=23.7.0
+flake8>=6.0.0
+
+# Logging & Tracking (optional)
+wandb>=0.15.0  # Weights & Biases tracking
+
+# Optimization
+onnx>=1.14.0  # Model export
+onnxruntime>=1.16.0  # ONNX inference
