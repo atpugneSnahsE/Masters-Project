@@ -49,3 +49,4 @@ ehthumbs.db
 .cache/
 carlaCache/
 *.pth.tar
+*.pth.tar
