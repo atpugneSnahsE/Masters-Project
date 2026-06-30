@@ -1,0 +1,4 @@
+Environment,GPS Raw Mean Error (m),RTK Raw Mean Error (m),Linear KF Mean Error (m),Max Peak Error (m)
+Open Sky,3.208 ± 0.419,0.037 ± 0.004,0.034 ± 0.004,N/A
+Urban Canyon,6.280 ± 0.031,1.023 ± 0.009,2.017 ± 0.205,N/A
+Tunnel Outage,N/A,N/A,130.139 ± 0.248,237.939 ± 0.229

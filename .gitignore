@@ -1,52 +1,10 @@
-# Python
+# Ignore datasets
+datasets/
+
+# Python cache
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
+*.pyc
+
+# Virtual environments
+.venv/
 venv/
-ENV/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Data and models
-*.pth
-*.pt
-*.pkl
-*.csv
-data/raw/
-data/processed/
-models/checkpoints/
-
-# Outputs
-output/
-*.png
-*.jpg
-*.mp4
-xai_output/
-
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb_checkpoints
-
-# Logs
-*.log
-
-# Cache
-.cache/
-carlaCache/
-*.pth.tar
-*.pth.tar

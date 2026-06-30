@@ -1,9 +1,0 @@
-{
-  "town": "Town10HD",
-  "weather": "overcast_day",
-  "lane_id": 1,
-  "road_id": 395,
-  "junction": true,
-  "speed_kmh": 28.6,
-  "is_night": false
-}

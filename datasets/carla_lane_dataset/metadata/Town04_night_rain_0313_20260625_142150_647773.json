@@ -1,9 +1,0 @@
-{
-  "town": "Town04",
-  "weather": "night_rain",
-  "lane_id": -3,
-  "road_id": 1401,
-  "junction": true,
-  "speed_kmh": 43.7,
-  "is_night": true
-}
