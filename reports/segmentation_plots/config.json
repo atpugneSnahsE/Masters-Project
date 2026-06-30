@@ -1,0 +1,11 @@
+{
+  "map_name": "Town10HD",
+  "weather": "night",
+  "model_path": "models/lane_model_best.pth",
+  "output_dir": "reports/segmentation_plots",
+  "sim_length": 300,
+  "save_every": 10,
+  "seed": 42,
+  "headless": false,
+  "show_gui": false
+}

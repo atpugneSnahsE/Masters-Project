@@ -1,0 +1,9 @@
+{
+  "town": "Town02",
+  "weather": "overcast_day",
+  "lane_id": 1,
+  "road_id": 19,
+  "junction": false,
+  "speed_kmh": 30.9,
+  "is_night": false
+}

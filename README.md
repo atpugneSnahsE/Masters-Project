@@ -2,24 +2,30 @@
 
 A comprehensive autonomous vehicle perception system combining lane detection, traffic analysis, and object detection using deep learning.
 
-## 📁 Project Structure
+## Project Structure
 
 ```
-Masters-Project/
-├── models/                    # Pre-trained and trained model weights
-├── src/                       # Source code
-│   ├── lane_detection/       # Lane detection models and inference
-│   ├── traffic_analysis/     # Traffic and object detection
-│   ├── utils/                # Utility functions and helpers
-│   ├── data_processing/      # Data collection and preprocessing
-│   └── visualization/        # Visualization and analysis tools
-├── notebooks/                 # Jupyter notebooks for exploration
-├── data/                      # Data files and datasets
-├── output/                    # Generated outputs and results
-└── docs/                      # Documentation
+Masters Thesis/
+├── data_collection/          # CARLA data collection scripts
+├── Datasets/                 # Training datasets (carla_lane_dataset, VIL100)
+├── docs/                     # Documentation
+├── evaluation/               # Evaluation metrics, analysis scripts
+├── lane_pipelines/           # Lane detection inference pipelines
+├── localization/             # Localization and RTK fusion
+├── models/                   # Pre-trained and trained model weights
+├── perception/               # Lane analysis, markings, ego classification
+├── pipeline/                 # Integrated system pipelines
+├── reports/                  # Generated reports and plots
+├── sensor_experiments/       # Sensor simulation experiments
+├── training/                 # Model training scripts
+├── utils/                    # Utility functions (yolo, verification, etc.)
+├── visualization/            # BEV, calibration, frame extraction
+├── xai/                      # Explainable AI experiments
+├── README.md
+└── requirements.txt
 ```
 
-## 🚀 Key Components
+## Key Components
 
 ### Lane Detection
 - **UNet-based lane segmentation** using ResNet34 encoder
@@ -37,25 +43,24 @@ Masters-Project/
 - **Calibration utilities** for camera parameters
 - **Frame extraction** and video processing
 
-## 📊 Models Included
+## Models Included
 
-- `lane_model_final.pth` - Final lane detection model
-- `best_lane_model.pth` - Best performing lane model
-- `yolov8n.pt` - YOLOv8 Nano for object detection
-- `yolov8n-oiv7.pt` - YOLOv8 with OIV7 dataset
+- `models/carla_lane_models/lane_model_final.pth` - Final lane detection model (CARLA)
+- `models/carla_lane_models/lane_model_best.pth` - Best performing lane model (CARLA)
+- `models/vil100_model/final_model.pth` - VIL100-trained lane model
+- `models/vil100_model/best_model.pth` - Best VIL100 lane model
+- `models/yolov8n.pt` - YOLOv8 Nano for object detection
+- `models/yolov8n-oiv7.pt` - YOLOv8 with OIV7 dataset
+- `models/traffic_best.pt` - Best traffic detection model
 
-## 🔧 Setup
+## Setup
 
 1. Install dependencies: `pip install -r requirements.txt`
 2. Download/prepare datasets
 3. Configure CARLA simulator if using synthetic data
-4. Run specific scripts from `src/` directory
+4. Run specific scripts from respective directories
 
-## 📝 File Descriptions
-
-See individual module README files for detailed documentation.
-
-## 📚 References
+## References
 
 - Advanced Lane Finding: https://medium.com/@mithi/advanced-lane-finding
 - YOLOv8: https://docs.ultralytics.com/
@@ -64,4 +69,4 @@ See individual module README files for detailed documentation.
 ---
 
 **Status**: Active Development  
-**Last Updated**: 2026-05-18
+**Last Updated**: 2026-06-30
