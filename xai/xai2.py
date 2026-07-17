@@ -17,12 +17,15 @@ import numpy as np
 import cv2
 import torchvision.transforms as T
 import segmentation_models_pytorch as smp
-from lime import lime_image
-from skimage.segmentation import mark_boundaries
 import matplotlib.pyplot as plt
 from collections import deque
 from enum import Enum
 import os
+
+# --- PyTorch Grad-CAM Utilities ---
+from pytorch_grad_cam import GradCAM
+from pytorch_grad_cam.utils.model_targets import SemanticSegmentationTarget
+from pytorch_grad_cam.utils.image import show_cam_on_image
 
 os.makedirs("xai_output", exist_ok=True)
 
@@ -47,265 +50,68 @@ model.eval()
 
 transform = T.Compose([T.ToPILImage(), T.Resize((256, 512)), T.ToTensor()])
 
-# ====================== LIME ======================
-def batch_predict(images):
-    model.eval()
-    processed = []
-    for img in images:
-        if img.dtype in (np.float32, np.float64):
-            img = (img * 255).clip(0, 255).astype(np.uint8)
-        processed.append(transform(img))
-    batch = torch.stack(processed).to(device)
-    with torch.no_grad():
-        preds = model(batch)
-        probs = torch.sigmoid(preds).cpu().numpy()
-    prob_maps = np.stack([prepare_prob_map(prob) for prob in probs], axis=0)
-    return prob_maps.reshape(len(images), -1)
-
+# ====================== GRAD-CAM CONFIGURATION ======================
+# Target the deepest convolutional layer of your ResNet-34 encoder block
+target_layers = [model.encoder.layer4[-1]]
+cam_engine = GradCAM(model=model, target_layers=target_layers)
 
 # ====================== XAI HELPERS ======================
 
-def fill_lane_corridor(line_mask, h, w):
-    """
-    Fill the drivable corridor between the two detected lane lines.
-
-    Blob-centroid split (replaces the naive image-midpoint split)
-    ─────────────────────────────────────────────────────────────
-    Instead of assuming the left line is always left of w//2, we find the
-    two largest connected blobs in line_mask and label them LEFT / RIGHT by
-    their column centroid.  This handles curves and intersections where both
-    lines can appear on the same side of the image.
-
-    Anti-bleed rules
-    ────────────────
-    1. Both blobs present  → fill between their inner edges, row by row.
-    2. Only one blob       → project the missing edge using ref_width
-                             (median of measured widths, or 35 % of w).
-    3. Per-row hard cap    → corridor clamped to [MIN, MAX] pixels wide.
-    4. Final blob guard    → drops any filled region wider than MAX_LANE_PX.
-    """
-    MIN_LANE_PX     = 60
-    MAX_LANE_PX     = int(w * 0.55)
-    DEFAULT_LANE_PX = int(w * 0.35)
-
-    corridor = np.zeros((h, w), dtype=np.uint8)
-
-    # ── Identify the two main line blobs by centroid ───────────────────────
-    n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(line_mask)
-    if n_labels < 2:
-        return corridor   # nothing detected at all
-
-    # Sort non-background components by area, keep top-2
-    # but only consider blobs whose centroid is in the lower 60 % of the
-    # image — real lane lines seen from a forward camera are always there.
-    # Blobs with centroids higher up are guardrails, painted walls, etc.
-    CENTROID_Y_MIN = h * 0.40   # centroid must be below this fraction
-
-    road_comps = [i for i in range(1, n_labels)
-                  if centroids[i][1] >= CENTROID_Y_MIN]
-    road_comps = sorted(road_comps,
-                        key=lambda i: stats[i, cv2.CC_STAT_AREA],
-                        reverse=True)[:2]
-
-    comp_ids = road_comps
-
-    if len(comp_ids) == 1:
-        # Only one blob — label it by centroid position
-        cx = centroids[comp_ids[0]][0]
-        if cx < w * 0.5:
-            left_id, right_id = comp_ids[0], None
-        else:
-            left_id, right_id = None, comp_ids[0]
-    else:
-        # Two blobs — assign left/right by centroid x
-        c0 = centroids[comp_ids[0]][0]
-        c1 = centroids[comp_ids[1]][0]
-        if c0 <= c1:
-            left_id, right_id = comp_ids[0], comp_ids[1]
-        else:
-            left_id, right_id = comp_ids[1], comp_ids[0]
-
-    def blob_mask(bid):
-        return (labels == bid).astype(np.uint8) * 255 if bid is not None else None
-
-    left_blob  = blob_mask(left_id)
-    right_blob = blob_mask(right_id)
-
-    # ── Pass 1: measure ref_width from rows with both blobs ────────────────
-    lane_widths = []
-    row_bounds  = {}   # y → (xl, xr)
-
-    for y in range(int(h * 0.40), h):
-        if left_blob is not None and right_blob is not None:
-            lx = np.where(left_blob[y]  > 0)[0]
-            rx = np.where(right_blob[y] > 0)[0]
-            if len(lx) > 2 and len(rx) > 2:
-                xl = int(np.max(lx))
-                xr = int(np.min(rx))
-                if MIN_LANE_PX < (xr - xl) < MAX_LANE_PX:
-                    row_bounds[y] = (xl, xr)
-                    lane_widths.append(xr - xl)
-
-    ref_width = (int(np.median(lane_widths))
-                 if len(lane_widths) >= 3
-                 else DEFAULT_LANE_PX)
-
-    # ── Pass 2: fill ───────────────────────────────────────────────────────
-    for y in range(int(h * 0.40), h):
-        if y in row_bounds:
-            xl, xr = row_bounds[y]
-        else:
-            # Single-blob fallback using ref_width
-            lx = np.where(left_blob[y]  > 0)[0] if left_blob  is not None else []
-            rx = np.where(right_blob[y] > 0)[0] if right_blob is not None else []
-
-            if len(lx) > 2 and len(rx) == 0:
-                xl = int(np.max(lx))
-                xr = min(xl + ref_width, w - 1)
-            elif len(rx) > 2 and len(lx) == 0:
-                xr = int(np.min(rx))
-                xl = max(xr - ref_width, 0)
-            else:
-                continue
-
-        # Hard clamp
-        if (xr - xl) > MAX_LANE_PX:
-            centre = (xl + xr) // 2
-            xl = centre - MAX_LANE_PX // 2
-            xr = centre + MAX_LANE_PX // 2
-        if (xr - xl) >= MIN_LANE_PX:
-            corridor[y, xl:xr + 1] = 255
-
-    # ── Morphological clean-up ─────────────────────────────────────────────
-    corridor = cv2.morphologyEx(corridor, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
-    corridor = cv2.morphologyEx(corridor, cv2.MORPH_OPEN,  np.ones((5, 5), np.uint8))
-
-    # ── Final blob width guard ─────────────────────────────────────────────
-    nc, clabels, cstats, _ = cv2.connectedComponentsWithStats(corridor)
-    clean = np.zeros_like(corridor)
-    for i in range(1, nc):
-        if cstats[i, cv2.CC_STAT_WIDTH] <= MAX_LANE_PX:
-            clean[clabels == i] = 255
-    return clean
-
-
-def build_road_roi_mask(h, w, horizon_frac=0.42):
-    """Trapezoid mask that covers only the road surface below the horizon."""
-    mask = np.zeros((h, w), dtype=np.uint8)
-    pts  = np.array([
-        [0,          h],
-        [w,          h],
-        [int(w * 0.75), int(h * horizon_frac)],
-        [int(w * 0.25), int(h * horizon_frac)],
-    ], dtype=np.int32)
-    cv2.fillPoly(mask, [pts], 255)
-    return mask
-
-
-def make_corridor_confidence(prob_vis, corridor_mask, line_mask, h, w):
-    """
-    Confidence map where:
-      - inside the drivable corridor  → the mean prob of the two lane lines
-        (high, uniform green — the car knows this is its lane)
-      - on the line pixels themselves → raw model probability
-      - everywhere else               → raw model probability (mostly red)
-    """
+def make_corridor_confidence(prob_vis, line_mask, h, w):
+    """Generates confidence map smoothed around predicted model mask zones."""
     conf = prob_vis.copy()
-
-    # Compute representative line confidence as the mean prob over line pixels
     line_pixels = prob_vis[line_mask > 0]
     line_conf   = float(np.mean(line_pixels)) if len(line_pixels) > 0 else 0.85
 
-    # Fill corridor with that uniform confidence value
-    conf[corridor_mask > 0] = line_conf
-
-    # Keep the actual line pixels at their raw (usually higher) probability
+    # Target lane mask regions get full prediction confidence
     conf[line_mask > 0] = prob_vis[line_mask > 0]
-
-    # Smooth so there are no hard edges between corridor and surroundings
     conf = cv2.GaussianBlur(conf, (21, 21), 0)
-
-    # Re-suppress sky
     conf[:int(h * 0.35), :] = 0
     return conf
 
 
-# ====================== FIXED XAI ======================
+# ====================== GRAD-CAM GENERATION ======================
 def generate_xai_figure(rgb_image, frame_id):
     save_path = f"xai_output/xai_frame_{frame_id:06d}.png"
     h, w = rgb_image.shape[:2]
 
     inp = transform(rgb_image).unsqueeze(0).to(device)
+    
+    # 1. Forward inference to capture output maps
+    model.eval()
     with torch.no_grad():
         pred = model(inp)
     prob = torch.sigmoid(pred).cpu().numpy()
     prob = prepare_prob_map(prob)
     prob_vis = cv2.resize(prob, (w, h), cv2.INTER_LINEAR)
-    if prob_vis.ndim != 2:
-        prob_vis = np.squeeze(prob_vis)
-
-    # Suppress sky
     prob_vis[:int(h * 0.38), :] = 0
 
-    # Match main pipeline threshold
     lower_half = prob_vis[int(h * 0.4):, :]
     thresh     = max(0.22, np.percentile(lower_half, 78))
 
+    # Real deal: Raw model mask prediction 
     line_mask = (prob_vis > thresh).astype(np.uint8) * 255
     line_mask = cv2.morphologyEx(line_mask, cv2.MORPH_CLOSE, np.ones((11, 9), np.uint8))
     line_mask = cv2.morphologyEx(line_mask, cv2.MORPH_OPEN,  np.ones((7,  7), np.uint8))
 
-    # Keep only the two largest blobs (= left + right lane line)
-    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(line_mask)
-    if n_labels > 2:
-        # Sort components by area descending, keep top-2
-        areas   = stats[1:, cv2.CC_STAT_AREA]
-        top2    = np.argsort(areas)[::-1][:2] + 1   # +1 because label 0 = background
-        line_mask = np.zeros_like(line_mask)
-        for lbl in top2:
-            line_mask[labels == lbl] = 255
+    print(f"   Frame {frame_id} | Thresh: {thresh:.3f} | Mask px: {(line_mask > 0).sum()}")
 
-    print(f"   Frame {frame_id} | Thresh: {thresh:.3f} | Line px: {(line_mask > 0).sum()}")
+    # ── FIXED BLENDED OVERLAY (No more phantom corridors) ──────────────────
+    mask_overlay = rgb_image.copy()
+    mask_overlay[line_mask > 0] = [0, 255, 120]  # Pure neon green 
+    # Clean alpha blend directly matching what the network isolates
+    enhanced = cv2.addWeighted(mask_overlay, 0.40, rgb_image, 0.60, 0)
 
-    # ── CORRIDOR FILL ──────────────────────────────────────────────────────────
-    corridor = fill_lane_corridor(line_mask, h, w)
-
-    # Visualisation: green corridor + brighter green on the lines themselves
-    enhanced = rgb_image.copy()
-    green_corridor = corridor.copy()
-    green_corridor[line_mask > 0] = 0          # lines handled separately
-    enhanced[green_corridor > 0]  = [30, 200, 80]   # corridor: semi-transparent look
-    # Blend corridor so road texture shows through slightly
-    corridor_overlay = rgb_image.copy()
-    corridor_overlay[green_corridor > 0] = [30, 200, 80]
-    enhanced = cv2.addWeighted(corridor_overlay, 0.55, rgb_image.copy(), 0.45, 0)
-    enhanced[line_mask > 0] = [80, 255, 140]   # line pixels: bright green on top
-
-    # ── LIME (road-ROI masked) ─────────────────────────────────────────────────
-    # Black-out everything above the horizon so LIME superpixels never include sky
-    road_roi  = build_road_roi_mask(h, w, horizon_frac=0.42)
-    lime_input = rgb_image.copy().astype(np.float64) / 255.0
-    lime_input[road_roi == 0] = 0.0            # zero out sky/walls for LIME
-
-    explainer   = lime_image.LimeImageExplainer(verbose=False)
-    explanation = explainer.explain_instance(
-        lime_input,
-        batch_predict,
-        top_labels=1,
-        hide_color=0,
-        num_features=50,
-        num_samples=800,
-        batch_size=20,
-        random_seed=42
-    )
-    temp, lime_boundary = explanation.get_image_and_mask(
-        explanation.top_labels[0], positive_only=True, num_features=25, hide_rest=False
-    )
-    # Restore original colours in the LIME visualisation (only show boundaries)
-    lime_vis = mark_boundaries(rgb_image.astype(np.float64) / 255.0, lime_boundary)
+    # ── GRAD-CAM INTERPOLATION ──────────────────────────────────────────────────
+    cam_mask = cv2.resize(line_mask, (512, 256), interpolation=cv2.INTER_NEAREST) / 255.0
+    targets = [SemanticSegmentationTarget(category=1, mask=cam_mask)]
+    
+    grayscale_cam = cam_engine(input_tensor=inp, targets=targets)[0, :]
+    grayscale_cam_resized = cv2.resize(grayscale_cam, (w, h))
+    gradcam_vis = show_cam_on_image(rgb_image.astype(np.float32) / 255.0, grayscale_cam_resized, use_rgb=True)
 
     # ── CONFIDENCE MAP ────────────────────────────────────────────────────────
-    trust_map = make_corridor_confidence(prob_vis, corridor, line_mask, h, w)
+    trust_map = make_corridor_confidence(prob_vis, line_mask, h, w)
 
     # ── PLOT ──────────────────────────────────────────────────────────────────
     fig, axs = plt.subplots(1, 4, figsize=(24, 6))
@@ -315,11 +121,11 @@ def generate_xai_figure(rgb_image, frame_id):
     axs[0].axis('off')
 
     axs[1].imshow(enhanced)
-    axs[1].set_title("Drivable Corridor")
+    axs[1].set_title("True Model Detection")
     axs[1].axis('off')
 
-    axs[2].imshow(lime_vis)
-    axs[2].set_title("LIME Attribution (road ROI)")
+    axs[2].imshow(gradcam_vis)
+    axs[2].set_title("Grad-CAM Spatial Attribution")
     axs[2].axis('off')
 
     im = axs[3].imshow(trust_map, cmap='RdYlGn', vmin=0, vmax=1)
@@ -327,11 +133,11 @@ def generate_xai_figure(rgb_image, frame_id):
     axs[3].axis('off')
     plt.colorbar(im, ax=axs[3])
 
-    plt.suptitle(f"XAI Analysis - Frame {frame_id}", fontsize=18)
+    plt.suptitle(f"XAI Analysis (Grad-CAM) - Frame {frame_id}", fontsize=18)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"   ✅ XAI saved: {save_path}")
+    print(f"   ✅ Grad-CAM Frame saved: {save_path}")
 
 
 # ====================== CARLA SETUP ======================
@@ -428,28 +234,14 @@ def get_speed_kmh():
 
 def prepare_prob_map(prob):
     prob = np.asarray(prob)
-
     if prob.ndim == 4:
-        if prob.shape[0] == 1:
-            prob = prob[0]
-        else:
-            prob = prob[0]
-
+        prob = np.squeeze(prob, axis=0)
     if prob.ndim == 3:
-        # Handle channel-first outputs like (C, H, W) and channel-last outputs like (H, W, C).
-        if prob.shape[0] <= 6 and prob.shape[0] != prob.shape[-1]:
-            lane_channels = prob[:6]
-            prob = np.max(lane_channels, axis=0) if lane_channels.shape[0] > 1 else lane_channels[0]
-        elif prob.shape[-1] <= 6 and prob.shape[-1] != prob.shape[0]:
-            lane_channels = prob[..., :6]
-            prob = np.max(lane_channels, axis=-1)
+        if prob.shape[0] > 1 and prob.shape[0] != prob.shape[-1]:
+            prob = np.max(prob[1:], axis=0)
         else:
             prob = prob[0]
-
-    if prob.ndim > 2:
-        prob = np.max(prob, axis=0) if prob.shape[0] <= 6 else np.max(prob, axis=-1)
-
-    return np.squeeze(prob.astype(np.float32))
+    return np.squeeze(prob)
 
 
 def filter_horizontal_noise(mask):
@@ -732,7 +524,7 @@ def draw_hud(overlay, lane_label, state, speed, gap, trend, width):
 # ====================== MAIN PROCESS CALLBACK ======================
 latest      = None
 frame_count = 0
-XAI_EVERY   = 35
+XAI_EVERY   = 1  # Real-time Grad-CAM allows processing frame-by-frame
 
 
 def process(image):
@@ -750,10 +542,7 @@ def process(image):
 
     prob = torch.sigmoid(pred).cpu().numpy()
     prob = prepare_prob_map(prob)
-    if prob.ndim != 2:
-        prob = np.squeeze(prob)
 
-    # Main pipeline threshold (consistent with XAI path after fixes)
     lower_half = prob[int(prob.shape[0] * 0.4):, :]
     thresh     = max(0.22, np.percentile(lower_half, 78))
 
@@ -813,7 +602,6 @@ try:
             draw_lane_overlay(overlay, mask)
             draw_hud(overlay, lane_label, state, speed, gap, trend, width)
 
-            # BEV mini-map inset
             bev_vis = cv2.resize(cv2.cvtColor(b, cv2.COLOR_GRAY2BGR), (260, 130))
             gray    = cv2.cvtColor(bev_vis, cv2.COLOR_BGR2GRAY)
             gray    = cv2.equalizeHist(gray)
@@ -827,7 +615,7 @@ try:
 
             if show_window:
                 try:
-                    cv2.imshow("CARLA + LIME", overlay)
+                    cv2.imshow("CARLA + GRAD-CAM", overlay)
                 except cv2.error:
                     show_window = False
                     print("Headless environment detected; skipping OpenCV window display.")
